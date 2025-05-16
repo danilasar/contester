@@ -1,3 +1,5 @@
 [submodule "document"]
 	path = document
 	url = ./document
+[submodule "./document"]
+	url = git@github.com:danilasar/contester-coursework.git

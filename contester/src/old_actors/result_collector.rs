@@ -20,7 +20,7 @@ impl Default for ResultCollector {
 
 // Message handler for TaskResult
 impl Handler<TaskResult> for ResultCollector {
-    type Result = ();
+    type Result = String;
 
     fn handle(&mut self, msg: TaskResult, _ctx: &mut Self::Context) -> Self::Result {
         // TODO: Implement actual result storage and processing logic
@@ -31,8 +31,9 @@ impl Handler<TaskResult> for ResultCollector {
         // 4. Handle any errors that might occur
 
         // For now, just store the result in memory
-        self.results.insert(msg.task_id, msg);
+        self.results.insert(msg.task_id, msg.clone());
         println!("Stored result for task {}", msg.task_id);
+        "OK".to_string()
     }
 }
 

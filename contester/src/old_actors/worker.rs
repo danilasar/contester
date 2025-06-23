@@ -26,7 +26,8 @@ impl Handler<EvaluateTask> for Worker {
         };
 
         // Send the result to ResultCollector
-        let addr = ResultCollector::from_registry();
+        let collector = ResultCollector::default();
+        let addr = collector.start();
         addr.do_send(result.clone());
 
         // Return the result

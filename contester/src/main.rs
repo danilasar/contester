@@ -2,8 +2,25 @@ mod actors;
 use actix::prelude::*;
 use actix_web::{App, HttpServer, http::header::q, web};
 use futures_util::StreamExt;
-use futures_util::io::AsyncWriteExt;
+//use futures_util::io::AsyncWriteExt;
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::client::conn::http1::{Connection, SendRequest};
+use hyper::{Method, Request, upgrade};
+use hyper_util::rt::TokioIo;
 use podman_api::{Podman, api::Exec, opts::*};
+use serde::Deserialize;
+use serde_json::json;
+use std::path::Path;
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct CreateContainerResponse {
+    id: String,
+    warnings: Vec<String>,
+}
 
 // Define our actor
 struct MyActor;
@@ -31,13 +48,53 @@ async fn ping_handler(addr: web::Data<Addr<MyActor>>) -> String {
     addr.send(Ping).await.unwrap()
 }
 
+async fn get_podman_conn() -> Result<
+    (
+        SendRequest<Full<Bytes>>,
+        Connection<TokioIo<UnixStream>, Full<Bytes>>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let path = Path::new("/run/user/1000/podman/podman.sock");
+    let stream = UnixStream::connect(path).await?;
+    let io = TokioIo::new(stream);
+    let (sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+    Ok((sender, conn))
+}
+
 async fn podman_test() {
-    let podman = Podman::new("unix:///run/user/1000/podman/podman.sock");
-    if let Err(_) = podman {
-        // TODO:
-        return;
-    }
-    let podman = podman.unwrap(); // if let Err upper
+    //let podman = Podman::new("unix:///run/user/1000/podman/podman.sock");
+
+    let (mut sender, conn) = get_podman_conn().await.unwrap(); // TODO:
+    tokio::spawn(async move {
+        // Этому соединению не нужен upgrade
+        if let Err(err) = conn.with_upgrades().await {
+            eprintln!("Соединение 1 (create/start) разорвано: {:?}", err);
+        }
+    });
+
+    // 4. Создаем наш JSON-пейлоад
+    let json_payload = json!({
+      "Image": "myapp:latest",
+      "Resources": {
+        "Memory": {
+          "Limit": 134217728,
+          "Swap": 268435456
+        },
+        "Cpu": {
+          "Quota": 50000,
+          "Period": 100000
+        }
+      },
+      "Tty": false,
+      "OpenStdin": true,
+      //"Cmd": ["cat"]
+      //"Cmd": ["/bin/sh", "/app.sh"]
+    });
+    let body_bytes = json_payload.to_string();
+    println!("Подсосались");
+
+    let podman = Podman::new("unix:///run/user/1000/podman/podman.sock").unwrap(); // TODO::
     let build_opts =
         ImageBuildOpts::builder("/data/docs/sgu/coursework/contester/containers/helloworld")
             .dockerfile("Dockerfile")
@@ -62,141 +119,146 @@ async fn podman_test() {
 
     println!("abaunda");
 
-    let linux_resources = podman_api::models::LinuxResources {
-        memory: Some(podman_api::models::LinuxMemory {
-            limit: Some(134217728), // 128 MB
-            swap: Some(268435456),  // 256 MB total
-            swappiness: None,
-            reservation: None,        // No soft limit
-            disable_oom_killer: None, // Default OOM behavior
-            use_hierarchy: None,      // Default hierarchy
-            kernel: None,             // No kernel memory limit
-            kernel_tcp: None,         // No TCP kernel limit
-        }),
-        cpu: Some(podman_api::models::LinuxCpu {
-            quota: Some(50000), // 50% CPU
-            period: Some(100000),
-            shares: None,           // No CPU shares
-            realtime_runtime: None, // No realtime
-            realtime_period: None,  // No realtime period
-            cpus: None,             // No CPU pinning
-            mems: None,             // No memory nodes
-        }),
-        devices: None,         // No device limits
-        pids: None,            // No PID limits
-        block_io: None,        // No block I/O limits
-        hugepage_limits: None, // No hugepage limits
-        network: None,         // No network limits
-        rdma: None,            // No RDMA limits
-        unified: None,         // No unified cgroup limits
-    };
+    // 5. Формируем HTTP POST-запрос вручную
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("http://localhost/v4.0.0/libpod/containers/create")
+        .header("Content-Type", "application/json")
+        .header("Host", "localhost") // Этот заголовок требуется для hyper
+        .body(Full::new(Bytes::from(body_bytes)))
+        .unwrap(); // TODO:
 
-    let container_opts = ContainerCreateOpts::builder()
-        .image("myapp:latest")
-        //.command(vec!["/bin/bash"])
-        .resource_limits(linux_resources)
-        .build();
+    println!("Отправка запроса на создание контейнера...");
 
-    let container = podman.containers().create(&container_opts).await;
-    if let Err(e) = container {
-        // TODO:
+    // 6. Отправляем запрос и ждем ответ
+    let response = sender.send_request(req).await.unwrap(); // TODO:
+
+    println!("Получен ответ: {}", response.status());
+    assert_eq!(response.status(), hyper::StatusCode::CREATED); // Ожидаем статус 201
+
+    // 7. Читаем и разбираем тело ответа
+    let body_bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap() // TODO:
+        .to_bytes();
+    let create_response: CreateContainerResponse = serde_json::from_slice(&body_bytes).unwrap(); // TODO:
+
+    println!("Контейнер создан! ID: {}", create_response.id.clone());
+
+    println!("Шаг 3: Подключение к потокам (attach)...");
+    let attach_uri = format!(
+        "http://localhost/v4.0.0/libpod/containers/{}/attach?stdin=true&stdout=true&stream=true",
+        create_response.id.clone()
+    );
+
+    let mut attach_req = Request::builder()
+        .method(Method::POST)
+        .uri(attach_uri)
+        .header("Host", "localhost")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "tcp") // Стандартные заголовки для запроса на 'upgrade'
+        .body(Full::new(Bytes::new()))
+        .unwrap(); // TODO:
+
+    let res = sender.send_request(attach_req).await.unwrap(); // TODO:
+
+    // Проверяем, что сервер согласился на 'upgrade'
+    if res.status() != hyper::StatusCode::SWITCHING_PROTOCOLS {
+        panic!("Server did not switch protocols. Status: {}", res.status());
+    }
+
+    println!("Шаг 4: Разделение потока на reader и writer...");
+    let upgraded_connection = upgrade::on(res).await;
+    if let Err(e) = upgraded_connection {
+        println!("{:#?}", e);
         return;
     }
-    println!("Контайнер создан");
-    let container = container.unwrap(); // if let Err upper
-    for warning in container.warnings {
-        eprintln!("{}", warning);
-    }
-    let container = podman.containers().get(container.id);
-    println!("Нашли наш контейнер");
-    /*let exec_start_opts = ExecStartOpts::builder()
-    .tty(true)
-    .build();*/
-    let exec_opts = ExecCreateOpts::builder()
-        .attach_stdin(true)
-        .attach_stdout(true)
-        .attach_stderr(true)
-        .tty(true)
-        .build();
+    let upgraded_connection = upgraded_connection.unwrap();
+    let io = TokioIo::new(upgraded_connection);
+    let (reader, mut writer) = io::split(io);
 
-    let exec = container.exec(&exec_opts).await;
+    println!("Поток успешно разделён!");
 
-    let exec_start_opts = ExecStartOpts::builder().tty(true).build();
-
-    let exec_stream = exec.start(&exec_start_opts).await?;
-    if let Err(e) = container.start(None).await {
-        eprintln!("{:#?}", e);
-        // TODO:
-        return;
-    }
-    println!("Запустили контейнер");
-
-    let attach_opts = ContainerAttachOpts::builder()
-        .stdin(true)
-        .stdout(true)
-        .stderr(true)
-        .build();
-
-    let tty_multiplexer = container.attach(&attach_opts).await;
-    if let Err(e) = tty_multiplexer {
-        eprintln!("{:#?}", e);
-        // TODO:
-        return;
-    }
-    println!("Подсосались к контейнеру");
-    let (mut reader, mut writer) = tty_multiplexer.unwrap().split(); // if let Err upper
-
-    let logs_opts = ContainerLogsOpts::builder()
-        .stdout(true)
-        .stderr(true)
-        .build();
-    let mut logs = container.logs(&logs_opts);
-    // Читаем начальные логи
-    println!("Reading initial logs:");
-    while let Some(log_chunk) = logs.next().await {
-        match log_chunk {
-            Ok(chunk) => {
-                println!("Log chunk: {:?}", String::from_utf8_lossy(&chunk));
-            }
-            Err(e) => {
-                eprintln!("Log error: {}", e);
-                break;
-            }
+    println!("Шаг 2: Запуск контейнера...");
+    let (mut sender, conn) = get_podman_conn().await.unwrap(); // TODO:
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("Соединение 2 (start) разорвано: {:?}", e);
         }
+    });
+    let start_req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "http://localhost/v4.0.0/libpod/containers/{}/start",
+            create_response.id.clone()
+        ))
+        .header("Host", "localhost")
+        .body(Full::new(Bytes::new()))
+        .unwrap(); // TODO:
+
+    sender.send_request(start_req).await.unwrap(); // TODO:
+    println!("Контейнер запущен");
+
+    println!("Шаг 5. Ожидание готовности скрипта");
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        if buf_reader.read_line(&mut line).await.unwrap() == 0 {
+            // TODO:
+            panic!("Скрипт завершился, не отправив сигнал READY"); // TODO:
+        }
+        if line.trim() == "READY" {
+            println!("Скрипт готов!");
+            line.clear(); // для следующего чтения
+            break;
+        } else {
+            println!("Неверный ввод скрипта: {}", line);
+        }
+        line.clear(); // для следующей итерации
     }
 
-    // Читаем начальный вывод
-    let mut output_buffer = Vec::new();
-    for _ in 0..3 {
-        // Читаем несколько chunk'ов
-        if let Some(Ok(chunk)) = reader.next().await {
-            output_buffer.extend_from_slice(&chunk);
-            println!("Received: {:?}", String::from_utf8_lossy(&chunk));
-        }
-    }
+    println!("Шаг 6: Отправка данных и получение ответа...");
+    let test_message = "Финишная прямая!\n";
+    writer.write_all(test_message.as_bytes()).await.unwrap(); // TODO:
+    writer.flush().await.unwrap(); // TODO:
+    println!("   Отправлено: {}", test_message.trim());
 
-    // Отправляем ответ на read
-    writer.write_all(b"Hello from Rust\n").await;
-    writer.flush().await;
+    // Читаем эхо-ответ от скрипта
+    buf_reader.read_line(&mut line).await.unwrap(); // TODO:
+    println!("   Получено:   {}", line.trim());
 
-    // Продолжаем читать
-    for _ in 0..5 {
-        // Читаем еще несколько chunk'ов
-        if let Some(Ok(chunk)) = reader.next().await {
-            println!("After input: {:?}", String::from_utf8_lossy(&chunk));
+    println!("Шаг 7: Остановка и удаление контейнера...");
+    let (mut sender, conn) = get_podman_conn().await.unwrap(); // TODO:
+    tokio::spawn(async move {
+        if let Err(err) = conn.await {
+            eprintln!("Соединение 3 (kill/remove) разорвано: {:?}", err);
         }
-    }
-    if let Err(e) = writer.write_all(b"echo 'Hello from Rust'\n").await {
-        eprintln!("{:#?}", e);
-    }
-    println!("Вдули контейнеру");
-    while let Some(tty_result) = reader.next().await {
-        match tty_result {
-            Ok(chunk) => println!("{:#?}", chunk),
-            Err(e) => eprintln!("Error: {:#?}", e),
-        }
-    }
-    println!("Отсосали у контейнера");
+    });
+    let kill_req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "http://localhost/v4.0.0/libpod/containers/{}/kill",
+            create_response.id.clone()
+        ))
+        .header("Host", "localhost")
+        .body(Full::new(Bytes::new()))
+        .unwrap(); // TODO:
+    sender.send_request(kill_req).await.unwrap(); // TODO:
+
+    println!("Контайнер остановлен");
+
+    let remove_req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "http://localhost/v4.0.0/libpod/containers/{}",
+            create_response.id.clone()
+        ))
+        .header("Host", "localhost")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    sender.send_request(remove_req).await.unwrap();
+    println!("Контейнер удалён. Готово.");
 }
 
 #[actix_web::main]

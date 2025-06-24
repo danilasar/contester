@@ -87,7 +87,7 @@ async fn podman_test() {
         }
       },
       "Tty": false,
-      "OpenStdin": true,
+      "stdin": true,
       //"Cmd": ["cat"]
       //"Cmd": ["/bin/sh", "/app.sh"]
     });
@@ -208,7 +208,7 @@ async fn podman_test() {
             // TODO:
             panic!("Скрипт завершился, не отправив сигнал READY"); // TODO:
         }
-        if line.trim() == "READY" {
+        if line.contains("READY") {
             println!("Скрипт готов!");
             line.clear(); // для следующего чтения
             break;
@@ -227,6 +227,8 @@ async fn podman_test() {
     // Читаем эхо-ответ от скрипта
     buf_reader.read_line(&mut line).await.unwrap(); // TODO:
     println!("   Получено:   {}", line.trim());
+
+    drop(writer);
 
     println!("Шаг 7: Остановка и удаление контейнера...");
     let (mut sender, conn) = get_podman_conn().await.unwrap(); // TODO:

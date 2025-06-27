@@ -76,17 +76,18 @@ async fn podman_test() {
     // 4. Создаем наш JSON-пейлоад
     let json_payload = json!({
       "Image": "myapp:latest",
-      "Resources": {
-        "Memory": {
-          "Limit": 134217728,
-          "Swap": 268435456
+      "resource_limits": {
+        "memory": {
+          "limit": 134217728,
+          "swap": 268435456
         },
-        "Cpu": {
-          "Quota": 50000,
-          "Period": 100000
+        "cpu": {
+          "quota": 50000,
+          "period": 100000
         }
       },
-      "Tty": false,
+      "timeout": 10,
+      "tty": false,
       "stdin": true,
       //"Cmd": ["cat"]
       //"Cmd": ["/bin/sh", "/app.sh"]

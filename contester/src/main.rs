@@ -6,6 +6,7 @@ use testing_service::{
     GetTestStatusRequest, GetTestStatusResponse, SubmitCodeRequest, SubmitCodeResponse,
 };
 use tonic::{Request, Response, Status, transport::Server};
+use tonic_reflection::server::Builder;
 
 pub mod testing_service {
     tonic::include_proto!("testing_service");
@@ -48,11 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "[::1]:50051".parse()?;
     let testing_service = MyTestingService::default();
+    let reflection_service = Builder::configure()
+        .register_encoded_file_descriptor_set(testing_service::FILE_DESCRIPTOR_SET)
+        .build_v1()?;
 
     println!("Server listening on {}", addr);
 
     Server::builder()
         .add_service(TestingServiceServer::new(testing_service))
+        .add_service(reflection_service)
         .serve(addr)
         .await?;
 

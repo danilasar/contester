@@ -1,32 +1,60 @@
 mod actors;
 mod podman;
 use actix::prelude::*;
-use actix_web::{App, HttpServer, http::header::q, web};
-use futures_util::StreamExt;
-//use futures_util::io::AsyncWriteExt;
-use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper::client::conn::http1::{Connection, SendRequest};
-use hyper::{Method, Request, upgrade};
-use hyper_util::rt::TokioIo;
-use podman_api::{Podman, api::Exec, opts::*};
-use serde::Deserialize;
-use serde_json::json;
-use std::path::Path;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use testing_service::testing_service_server::{TestingService, TestingServiceServer};
+use testing_service::{
+    GetTestStatusRequest, GetTestStatusResponse, SubmitCodeRequest, SubmitCodeResponse,
+};
+use tonic::{Request, Response, Status, transport::Server};
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    podman::podman_test().await;
-    let addr = podman::MyActor.start();
-    // Start HTTP server
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(addr.clone()))
-            .route("/ping", web::get().to(podman::ping_handler))
-    })
-    .bind("127.0.0.1:8080")?
-    .run()
-    .await
+pub mod testing_service {
+    tonic::include_proto!("testing_service");
+    pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto_descriptor.bin");
+}
+
+#[derive(Default)]
+pub struct MyTestingService {}
+
+#[tonic::async_trait]
+impl TestingService for MyTestingService {
+    async fn submit_code(
+        &self,
+        _request: Request<SubmitCodeRequest>,
+    ) -> Result<Response<SubmitCodeResponse>, Status> {
+        // Заглушка: возвращаем фиктивный test_id
+        let reply = SubmitCodeResponse {
+            task_id: "dummy_test_id".to_string(),
+        };
+        Ok(Response::new(reply))
+    }
+
+    async fn get_test_status(
+        &self,
+        _request: Request<GetTestStatusRequest>,
+    ) -> Result<Response<GetTestStatusResponse>, Status> {
+        // Заглушка: возвращаем статус TEST_STATUS_UNSPECIFIED без результатов
+        let reply = GetTestStatusResponse {
+            status: 0, // TEST_STATUS_UNSPECIFIED
+            test_results: vec![],
+        };
+        Ok(Response::new(reply))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //podman::podman_test().await;
+    //let _addr = podman::MyActor.start();
+
+    let addr = "[::1]:50051".parse()?;
+    let testing_service = MyTestingService::default();
+
+    println!("Server listening on {}", addr);
+
+    Server::builder()
+        .add_service(TestingServiceServer::new(testing_service))
+        .serve(addr)
+        .await?;
+
+    Ok(())
 }

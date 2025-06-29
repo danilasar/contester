@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package testing_service;
+
+// Основной сервис тестирования
+service TestingService {
+  // Отправить код на тестирование
+  rpc SubmitCode(SubmitCodeRequest) returns (SubmitCodeResponse);
+  
+  // Получить статус тестирования по идентификатору
+  rpc GetTestStatus(GetTestStatusRequest) returns (GetTestStatusResponse);
+}
+
+// Запрос на отправку кода
+message SubmitCodeRequest {
+  // Исходный код программы
+  string source_code = 1;
+  
+  // Язык программирования
+  ProgrammingLanguage language = 2;
+  
+  // Конфигурация тестирования
+  TestConfiguration test_config = 3;
+}
+
+// Ответ на отправку кода
+message SubmitCodeResponse {
+  string task_id = 1;
+}
+
+// Запрос статуса тестирования
+message GetTestStatusRequest {
+  string task_id = 1;
+}
+
+// Ответ со статусом тестирования
+message GetTestStatusResponse {
+  TestStatus status = 1;
+  // заполняется только для статусов "принято"/"не принято":
+  repeated TestResult test_results = 2;
+}
+
+// Поддерживаемые языки программирования
+enum ProgrammingLanguage {
+  PROGRAMMING_LANGUAGE_UNSPECIFIED = 0;
+  PROGRAMMING_LANGUAGE_CPP = 1;
+  PROGRAMMING_LANGUAGE_JAVA = 2;
+  PROGRAMMING_LANGUAGE_PYTHON = 3;
+  PROGRAMMING_LANGUAGE_JAVASCRIPT = 4;
+  PROGRAMMING_LANGUAGE_GO = 5;
+  PROGRAMMING_LANGUAGE_RUST = 6;
+  PROGRAMMING_LANGUAGE_CSHARP = 7;
+}
+
+// Конфигурация тестирования
+message TestConfiguration {
+  oneof config_type {
+    // Набор готовых тестов
+    TestSet test_set = 1;
+    
+    // Тестирующий скрипт
+    TestScript test_script = 2;
+  }
+}
+
+// Набор тестов с входными данными и ожидаемыми выходными данными
+message TestSet {
+  // Массив входных данных для тестов
+  repeated string input_data = 1;
+  
+  // Массив ожидаемых выходных данных
+  repeated string expected_output = 2;
+}
+
+// Тестирующий скрипт
+message TestScript {
+  string script_code = 1;
+  ProgrammingLanguage script_language = 2;
+}
+
+// Статус тестирования
+enum TestStatus {
+  TEST_STATUS_UNSPECIFIED = 0;
+  TEST_STATUS_COMPILING = 1;          // В процессе компиляции
+  TEST_STATUS_COMPILATION_ERROR = 2;  // Ошибка компиляции
+  TEST_STATUS_RUNNING = 3;            // В процессе выполнения
+  TEST_STATUS_REJECTED = 4;           // Не принято
+  TEST_STATUS_ACCEPTED = 5;           // Принято
+}
+
+// Результат выполнения конкретного теста
+message TestResult {
+  // Номер теста
+  int32 test_number = 1;
+  
+  TestResultStatus result_status = 2;
+  
+  int64 execution_time_ms = 3;
+  
+  // Дополнительная информация об ошибке (если есть)
+  string error_message = 4;
+}
+
+// Статус результата конкретного теста
+enum TestResultStatus {
+  TEST_RESULT_STATUS_UNSPECIFIED = 0;
+  TEST_RESULT_STATUS_ACCEPTED = 1;           // Принято
+  TEST_RESULT_STATUS_WRONG_ANSWER = 2;       // Неправильный ответ
+  TEST_RESULT_STATUS_TIME_LIMIT_EXCEEDED = 3; // Превышение лимита времени
+  TEST_RESULT_STATUS_SECURITY_VIOLATION = 4;  // Нарушение безопасности
+  TEST_RESULT_STATUS_TESTING_ERROR = 5;      // Ошибка тестирования
+}
